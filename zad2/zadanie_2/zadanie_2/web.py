@@ -1,5 +1,8 @@
 from flask import Flask, Response, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
+from werkzeug.security import generate_password_hash, check_password_hash
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives import serialization
 
 app = Flask(__name__)
 
@@ -20,13 +23,69 @@ class User(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
-    public_key = db.Column(db.String(120), unique=True, nullable=False)
+    public_key = db.Column(db.String(1200), unique=True, nullable=False)
 
     def __repr__(self):
         return f'<User {self.username}>'
 
+
 with app.app_context():
     db.create_all()
+
+def generate_rsa_keypair():
+    """Generate new RSA keypair"""
+    private_key = rsa.generate_private_key(
+        public_exponent=65537,
+        key_size=2048
+    )
+    public_key = private_key.public_key()
+    return private_key, public_key
+
+
+def serialize_private_key(private_key):
+    """Serialize a private key"""
+    return private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption()
+    )
+
+
+def serialize_public_key(public_key):
+    """Serialize a public key (no encryption needed)"""
+    return public_key.public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+
+
+def create_user(username: str, public_key_bytes):
+    """Create new user or update public key if user already exists"""
+    user = User.query.filter_by(username=username).first()
+    if user:
+        # User exists → update public key
+        user.public_key = public_key_bytes.decode()
+    else:
+        # User does not exist → create new
+        user = User(username=username, public_key=public_key_bytes.decode())
+        db.session.add(user)
+    db.session.commit()
+    return user
+
+
+@app.route('/api/users', methods=['GET'])
+def list_users():
+    """Return all users in the database - testing purposes"""
+    users = User.query.all()
+    result = []
+    for u in users:
+        result.append({
+            "id": u.id,
+            "username": u.username,
+            "public_key": u.public_key
+        })
+    return jsonify(result)
+
 
 '''
     API request na generovanie klucoveho paru pre pozuivatela <user>
@@ -38,12 +97,22 @@ with app.app_context():
 '''
 @app.route('/api/gen/<user>', methods=['GET'])
 def generate_keypair(user):
-    '''
-        TODO: implementovat
-    '''
+    # 1. Generate RSA keypair
+    private_key, public_key = generate_rsa_keypair()
 
-    return Response(b'\xff', content_type='application/octet-stream')
+    # 2. Serialize keys
+    private_pem = serialize_private_key(private_key)  # no password
+    public_pem = serialize_public_key(public_key)
 
+    # 3. Store public key in database along with username
+    create_user(user, public_pem)
+
+    # 4. Return private key in binary form for download
+    return Response(
+        private_pem,
+        content_type='application/octet-stream',
+        headers={"Content-Disposition": f"attachment; filename={user}.key"}
+    )
 
 '''
     API request na zasifrovanie suboru pre pouzivatela <user>
