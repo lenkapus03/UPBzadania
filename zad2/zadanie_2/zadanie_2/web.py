@@ -1,4 +1,5 @@
 import os
+
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from flask import Flask, Response, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
@@ -280,14 +281,33 @@ def decrypt_file():
 '''
 @app.route('/api/sign', methods=['POST'])
 def sign_file():
-    '''
-        TODO: implementovat
-    '''
-
     file = request.files.get('file')
     key = request.files.get('key')
 
-    return Response(b'\xff', content_type='application/octet-stream')
+    # Chybaju parametre
+    if not file or not key:
+        return jsonify({'error': 'Missing file or key parameter'}), 400
+
+    # Precitame subor a deserializujeme privatny kluc
+    file_data = file.read()
+    private_key = serialization.load_pem_private_key(key.read(), password=None)
+
+    # Skusime vytvorit podpis
+    try:
+        signature = private_key.sign(
+            file_data,
+            padding.PKCS1v15(),
+            hashes.SHA256()
+        )
+    except Exception as e:
+        return jsonify({'error': f'Failed to sign file: {str(e)}'}), 400
+
+
+    return Response(
+        signature,
+        content_type='application/octet-stream',
+        headers={"Content-Disposition": "attachment; filename=signature.bin"}
+    )
 
 
 '''
@@ -298,14 +318,33 @@ def sign_file():
 '''
 @app.route('/api/verify/<user>', methods=['POST'])
 def verify_signature(user):
-    '''
-        TODO: implementovat
-    '''
-
     file = request.files.get('file')
     signature = request.files.get('signature')
 
-    return jsonify({'verified': False})
+    if not file or not signature:
+        return jsonify({'error': 'Missing file or signature parameter'}), 400
+
+    file_data = file.read()
+    signature_data = signature.read()
+
+    user_record = User.query.filter_by(username=user).first()
+    if not user_record:
+        return jsonify({'error': f'User {user} not found'}), 404
+
+    public_key = deserialize_public_key(user_record.public_key.encode())
+
+    try:
+        public_key = public_key.verify(
+            signature_data,
+            file_data,
+            padding.PKCS1v15(),
+            hashes.SHA256()
+        )
+        verified = True
+    except Exception:
+        verified = False
+
+    return jsonify({'verified': verified})
 
 
 
