@@ -357,11 +357,61 @@ def verify_signature(user):
 '''
 @app.route('/api/encrypt2/<user>', methods=['POST'])
 def encrypt_file2(user):
-    '''
-        TODO: implementovat
-    '''
+    # 1. Načíta obsah súboru
+    file_content = request.data
+    if not file_content:
+        return jsonify({'error': 'No file content provided'}), 400
 
-    return Response(b'\xff', content_type='application/octet-stream')
+    # 2. Načíta verejný kľúč používateľa z DB
+    user_record = User.query.filter_by(username=user).first()
+    if not user_record:
+        return jsonify({'error': f'User {user} not found'}), 404
+
+    # 3. Deserializuje verejný kľúč
+    public_key = deserialize_public_key(user_record.public_key.encode())
+
+    # 4. Vygeneruje náhodný 256-bitový symetrický kľúč pre AES
+    symmetric_key = generate_aes_symetric_key()  # očakáva 32 bytov
+
+    # 5. Vygeneruj náhodný IV (12 bytov vhodných pre GCM)
+    iv = generate_aes_IV()  # očakáva 12 bytov
+
+    # 6. Zašifruj obsah pomocou AES-256-GCM a použijeme AAD = zašifrovaný sym. kľúč (po jeho RSA-šifrovaní)
+    #    Aby sme AAD mali, najprv zašifrujeme symetrický kľúč pomocou RSA (public_key).
+    try:
+        encrypted_key = public_key.encrypt(
+            symmetric_key,
+            padding.OAEP(
+                mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                algorithm=hashes.SHA256(),
+                label=None
+            )
+        )
+    except Exception as e:
+        return jsonify({'error': f'Failed to encrypt symmetric key with RSA: {str(e)}'}), 500
+
+    # 7. AES-GCM: použijeme zašifrovaný sym. kľúč ako AAD (to väzní integritu medzi časťami)
+    encryptor = Cipher(
+        algorithms.AES(symmetric_key),
+        modes.GCM(iv),
+    ).encryptor()
+
+    # pridať AAD
+    encryptor.authenticate_additional_data(encrypted_key)
+
+    ciphertext = encryptor.update(file_content) + encryptor.finalize()
+    tag = encryptor.tag
+
+    # 8. Skomponuj výstup: [4B length] + [encrypted_key] + [IV(12)] + [tag(16)] + [ciphertext]
+    encrypted_key_length = struct.pack('<I', len(encrypted_key))
+    result = encrypted_key_length + encrypted_key + iv + tag + ciphertext
+
+    # 9. Vráť binárny výsledok
+    return Response(
+        result,
+        content_type='application/octet-stream',
+        headers={"Content-Disposition": f"attachment; filename=encrypted2.bin"}
+    )
 
 
 '''
@@ -372,14 +422,81 @@ def encrypt_file2(user):
 '''
 @app.route('/api/decrypt2', methods=['POST'])
 def decrypt_file2():
-    '''
-        TODO: implementovat
-    '''
-
-    file = request.files.get('file')
+    # 1. Načítaj zasifrovaný subor a privátny kľúč z multipart požiadavky
+    encrypted_file = request.files.get('file')
     key = request.files.get('key')
+    if not encrypted_file or not key:
+        return jsonify({'error': 'Missing file or key parameter'}), 400
 
-    return Response(b'\xff', content_type='application/octet-stream')
+    # 2. Načítaj obsah zašifrovaného súboru
+    encrypted_data = encrypted_file.read()
+    if len(encrypted_data) < 4:
+        return jsonify({'error': 'Invalid encrypted file format'}), 400
+
+    # 3. Deserializuj privátny kľúč z PEM formátu
+    try:
+        private_key = serialization.load_pem_private_key(
+            key.read(),
+            password=None
+        )
+    except Exception as e:
+        return jsonify({'error': f'Failed to load private key: {str(e)}'}), 400
+
+    # 4. Parsuj formát súboru
+    try:
+        offset = 0
+        encrypted_key_length = struct.unpack('<I', encrypted_data[offset:offset + 4])[0]
+        offset += 4
+
+        encrypted_symmetric_key = encrypted_data[offset:offset + encrypted_key_length]
+        offset += encrypted_key_length
+
+        iv = encrypted_data[offset:offset + 12]
+        offset += 12
+
+        tag = encrypted_data[offset:offset + 16]
+        offset += 16
+
+        ciphertext = encrypted_data[offset:]
+    except Exception as e:
+        return jsonify({'error': f'Failed to parse encrypted file: {str(e)}'}), 400
+
+    # 5. Dešifruj symetrický kľúč pomocou RSA privátneho kľúča
+    try:
+        symmetric_key = private_key.decrypt(
+            encrypted_symmetric_key,
+            padding.OAEP(
+                mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                algorithm=hashes.SHA256(),
+                label=None
+            )
+        )
+    except Exception as e:
+        # Ak sa nezda decrypt sym. kľúča => nie je možné pokračovať
+        return jsonify({'error': f'Failed to decrypt symmetric key: {str(e)}'}), 400
+
+    # 6. Dešifruj obsah AES-GCM a použijeme AAD = encrypted_symmetric_key (to kontroluje integritu)
+    try:
+        decryptor = Cipher(
+            algorithms.AES(symmetric_key),
+            modes.GCM(iv, tag),
+        ).decryptor()
+
+        # pridať AAD rovnaký ako pri šifrovaní (v encrypt2 sme použili encrypted_key ako AAD)
+        decryptor.authenticate_additional_data(encrypted_symmetric_key)
+
+        plaintext = decryptor.update(ciphertext) + decryptor.finalize()
+
+    except Exception as e:
+        # Tu typicky dostaneme chybu pri finalize() ak tag nepasuje => integrita porušená
+        return jsonify({'error': f'Integrity check failed during decryption: {str(e)}'}), 400
+
+    # 7. Vráť dešifrovaný obsah
+    return Response(
+        plaintext,
+        content_type='application/octet-stream',
+        headers={"Content-Disposition": "attachment; filename=decrypted2.bin"}
+    )
 
 
 
