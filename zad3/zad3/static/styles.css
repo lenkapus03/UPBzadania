@@ -117,3 +117,46 @@ form input[type="submit"] {
 form input[type="submit"]:hover {
     background-color: #d32f2f;
 }
+
+   .countdown-container {
+            background: #fff3cd;
+            border: 2px solid #ffc107;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 20px 0;
+            text-align: center;
+        }
+
+        .countdown {
+            font-size: 48px;
+            font-weight: bold;
+            color: #856404;
+            margin: 10px 0;
+            font-family: monospace;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 30px;
+            background-color: #f0f0f0;
+            border-radius: 15px;
+            overflow: hidden;
+            margin: 15px 0;
+            border: 1px solid #ddd;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #4CAF50, #8BC34A);
+            transition: width 0.1s linear;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: bold;
+        }
+
+        .lock-icon {
+            font-size: 64px;
+            margin: 10px 0;
+        }

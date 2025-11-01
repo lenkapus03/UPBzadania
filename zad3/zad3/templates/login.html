@@ -8,11 +8,53 @@
 <body>
     <div class="container">
         <h1>Login</h1>
-        <form method="POST">
+           {% if locked_until %}
+        <!-- Účet je zamknutý - zobraz odpočítavanie -->
+         <div class="countdown-container">
+            <div class="lock-icon">🔒</div>
+            <h2>Account Temporarily Locked</h2>
+            <p>Too many failed login attempts detected.</p>
+            <p id="time-text" style="margin: 20px 0; font-size: 20px; color: #856404; font-weight: bold;"></p>
+        </div>
+        <script>
+            let remainingSeconds = {{ remaining_seconds }};
+            const timeTextEl = document.getElementById('time-text');
+
+            function updateDisplay() {
+                const minutes = Math.floor(remainingSeconds / 60);
+                const seconds = remainingSeconds % 60;
+
+                // Zobraz iba text s minútami a sekundami
+                if (minutes > 0) {
+                    timeTextEl.textContent = `${minutes} minute${minutes !== 1 ? 's' : ''} ${seconds} second${seconds !== 1 ? 's' : ''} remaining`;
+                } else {
+                    timeTextEl.textContent = `${seconds} second${seconds !== 1 ? 's' : ''} remaining`;
+                }
+            }
+
+            updateDisplay();
+
+            const interval = setInterval(() => {
+                remainingSeconds--;
+
+                if (remainingSeconds <= 0) {
+                    clearInterval(interval);
+                    timeTextEl.textContent = 'Unlocking...';
+                    setTimeout(() => location.reload(), 500);
+                } else {
+                    updateDisplay();
+                }
+            }, 1000);
+        </script>
+
+        {% else %}
+
+        <!-- Normálny login formulár -->
+        <form method="POST" id="login-form">
             {{ form.hidden_tag() }}
             <p>{{ form.username.label }} {{ form.username(class_="form-control") }}</p>
             <p>{{ form.password.label }} {{ form.password(class_="form-control") }}</p>
-            <p>{{ form.submit(class_="btn btn-primary") }}</p>
+            <p>{{ form.submit(class_="btn btn-primary", id="submit-btn") }}</p>
         </form>
 
         <!-- Display flash messages -->
@@ -27,6 +69,14 @@
         {% endwith %}
         
         <p>Don't have an account? <a href="{{ url_for('register') }}">Register here</a></p>
+        <script>
+            document.getElementById('login-form').addEventListener('submit', function() {
+                const btn = document.getElementById('submit-btn');
+                btn.disabled = true;
+                btn.value = 'Logging in...';
+            });
+        </script>
+        {% endif %}
     </div>
 </body>
 </html>
