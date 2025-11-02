@@ -66,7 +66,7 @@ class User(db.Model, UserMixin):
 
         # Zamkni účet po 5 neúspešných pokusoch na 15 minút
         if self.failed_login_attempts >= 5:
-            self.account_locked_until = datetime.utcnow() + timedelta(minutes=15)
+            self.account_locked_until = datetime.utcnow() + timedelta(minutes=1)
 
         db.session.commit()
 
@@ -80,7 +80,7 @@ class LoginAttempt(db.Model):
     success = db.Column(db.Boolean, default=False)
 
     @staticmethod
-    def get_recent_attempts(ip_address, minutes=15):
+    def get_recent_attempts(ip_address, minutes=1):
         """Získaj počet pokusov z IP za posledných X minút"""
         cutoff = datetime.utcnow() - timedelta(minutes=minutes)
         return LoginAttempt.query.filter(
@@ -147,30 +147,17 @@ def login():
     form = LoginForm()
 
     if request.method == 'GET':
-        locked_username = session.get('locked_username')
-        if locked_username:
-            user = User.query.filter_by(username=locked_username).first()
-            if user and user.is_account_locked():
-                remaining_seconds = int((user.account_locked_until - datetime.utcnow()).total_seconds())
-                if remaining_seconds > 0:
-                    return render_template('login.html', form=form,
-                                           locked_until=user.account_locked_until.isoformat(),
-                                           remaining_seconds=remaining_seconds)
-                else:
-                    session.pop('locked_username', None)
-
-            # Skontroluj aj session lockout pre neexistujúcich používateľov
-            session_lockout = session.get('session_lockout_until')
-            if session_lockout:
-                lockout_time = datetime.fromisoformat(session_lockout)
-                if datetime.utcnow() < lockout_time:
-                    remaining_seconds = int((lockout_time - datetime.utcnow()).total_seconds())
-                    return render_template('login.html', form=form,
-                                           locked_until=session_lockout,
-                                           remaining_seconds=remaining_seconds)
-                else:
-                    session.pop('session_lockout_until', None)
-                    session.pop('session_failed_attempts', None)
+        session_lockout = session.get('session_lockout_until')
+        if session_lockout:
+            lockout_time = datetime.fromisoformat(session_lockout)
+            if datetime.utcnow() < lockout_time:
+                remaining_seconds = int((lockout_time - datetime.utcnow()).total_seconds())
+                return render_template('login.html', form=form,
+                                       locked_until=session_lockout,
+                                       remaining_seconds=remaining_seconds)
+            else:
+                session.pop('session_lockout_until', None)
+                session.pop('session_failed_attempts', None)
 
     if form.validate_on_submit():
         username = form.username.data
@@ -178,39 +165,39 @@ def login():
         client_ip = get_client_ip()
 
         # 1. Kontrola IP rate limiting (max 10 pokusov za 15 minút)
-        ip_attempts = LoginAttempt.get_recent_attempts(client_ip, minutes=1)
+        ip_attempts = LoginAttempt.get_recent_attempts(client_ip, minutes=15)
         if ip_attempts >= 10:
             flash('Too many login attempts from your IP address. Please try again later.', 'error')
             return render_template('login.html', form=form)
 
-        # 2. Vyhľadaj používateľa
+        # 2. Skontroluj univerzálny session lockout
+        session_lockout = session.get('session_lockout_until')
+        if session_lockout:
+            lockout_time = datetime.fromisoformat(session_lockout)
+            if datetime.utcnow() < lockout_time:
+                remaining_seconds = int((lockout_time - datetime.utcnow()).total_seconds())
+                return render_template('login.html', form=form,
+                                       locked_until=session_lockout,
+                                       remaining_seconds=remaining_seconds)
+
+        # 3. Vyhľadaj používateľa
         user = User.query.filter_by(username=username).first()
 
-        # 3. Kontrola či je účet zamknutý
-        if user and user.is_account_locked():
-            remaining_seconds = int((user.account_locked_until - datetime.utcnow()).total_seconds())
-            attempt = LoginAttempt(ip_address=client_ip, success=False)
-            db.session.add(attempt)
-            db.session.commit()
-            session['locked_username'] = username
-            return render_template('login.html', form=form,
-                                   locked_until=user.account_locked_until.isoformat(),
-                                   remaining_seconds=max(0, remaining_seconds))
-
-        # 4. Overenie hesla a spracovania výsledku
+        # 4. Overenie hesla
         login_successful = False
         if user and check_password_hash(user.password, password):
             login_successful = True
 
         if login_successful:
             # Úspešné prihlásenie
-            user.reset_failed_attempts()
+            if user:
+                user.reset_failed_attempts()
+
             attempt = LoginAttempt(ip_address=client_ip, success=True)
             db.session.add(attempt)
             db.session.commit()
 
             # Vyčisti session
-            session.pop('locked_username', None)
             session.pop('session_failed_attempts', None)
             session.pop('session_lockout_until', None)
 
@@ -222,38 +209,26 @@ def login():
             db.session.add(attempt)
             db.session.commit()
 
+            session_attempts = session.get('session_failed_attempts', 0)
+            session_attempts += 1
+            session['session_failed_attempts'] = session_attempts
+
             if user:
-                # Existujúci používateľ
                 user.increment_failed_attempts()
 
-                if user.is_account_locked():
-                    remaining_seconds = int((user.account_locked_until - datetime.utcnow()).total_seconds())
-                    session['locked_username'] = username
+            if session_attempts >= 5:
+                # Zamkni session na 15 minút
+                lockout_until = datetime.utcnow() + timedelta(minutes=15)
+                session['session_lockout_until'] = lockout_until.isoformat()
 
-                    return render_template('login.html', form=form,
-                                           locked_until=user.account_locked_until.isoformat(),
-                                           remaining_seconds=max(0, remaining_seconds))
-                else:
-                    remaining_attempts = 5 - user.failed_login_attempts
-                    flash(f'Invalid username or password. {remaining_attempts} attempts remaining.', 'error')
+                remaining_seconds = 15 * 60
+                return render_template('login.html', form=form,
+                                       locked_until=lockout_until.isoformat(),
+                                       remaining_seconds=remaining_seconds)
             else:
-                # Neexistujúci používateľ - sleduj pokusy v session
-                session_attempts = session.get('session_failed_attempts', 0)
-                session_attempts += 1
-                session['session_failed_attempts'] = session_attempts
+                remaining_attempts = 5 - session_attempts
+                flash(f'Invalid username or password. {remaining_attempts} attempts remaining.', 'error')
 
-                if session_attempts >= 5:
-                    # Zamkni session na 15 minút
-                    lockout_until = datetime.utcnow() + timedelta(minutes=15)
-                    session['session_lockout_until'] = lockout_until.isoformat()
-
-                    remaining_seconds = 15 * 60
-                    return render_template('login.html', form=form,
-                                           locked_until=lockout_until.isoformat(),
-                                           remaining_seconds=remaining_seconds)
-                else:
-                    remaining_attempts = 5 - session_attempts
-                    flash(f'Invalid username or password. {remaining_attempts} attempts remaining.', 'error')
     return render_template('login.html', form=form)
 
 

@@ -37,14 +37,17 @@
             const interval = setInterval(() => {
                 remainingSeconds--;
 
-                if (remainingSeconds <= 0) {
+                if (remainingSeconds <= 1) {
                     clearInterval(interval);
                     timeTextEl.textContent = 'Unlocking...';
-                    setTimeout(() => location.reload(), 500);
-                } else {
-                    updateDisplay();
-                }
-            }, 1000);
+                     setTimeout(() => {
+                            // Vyčisti session v URL (force clean reload)
+                            window.location.href = "{{ url_for('login') }}?unlock=" + Date.now();
+                        }, 1500);
+                    } else {
+                        updateDisplay();
+                    }
+                }, 1000);
         </script>
 
         {% else %}
