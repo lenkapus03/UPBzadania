@@ -5,12 +5,12 @@ from wtforms.validators import InputRequired, EqualTo
 from flask_login import login_required, LoginManager, UserMixin, login_user, logout_user, current_user
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime, timedelta
-from werkzeug.security import check_password_hash
 
 import re
 import hashlib
 import requests
-from werkzeug.security import generate_password_hash
+
+import os
 
 app = Flask(__name__)
 
@@ -35,7 +35,8 @@ class User(db.Model, UserMixin):
 
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
-    password = db.Column(db.String(80), unique=False, nullable=False)
+    hashed_password = db.Column(db.String(80), unique=False, nullable=False)
+    salt = db.Column(db.String(80), unique=False, nullable=False)
     failed_login_attempts = db.Column(db.Integer, default=0)
     last_failed_login = db.Column(db.DateTime, nullable=True)
     account_locked_until = db.Column(db.DateTime, nullable=True)
@@ -118,10 +119,6 @@ def load_user(user_id):
     
 with app.app_context():
     db.create_all()
-    
-    # test_user = User(username='test', password='test')
-    # db.session.add(test_user)
-    # db.session.commit()
 
 
 class LoginForm(FlaskForm):
@@ -141,6 +138,13 @@ class RegisterForm(FlaskForm):
 @login_required
 def home():
     return render_template('home.html', username=current_user.username)
+
+
+@app.route('/debug/users')
+def show_users():
+    users = User.query.all()
+    return "ID | Username | Hashed_password | Salt | Failed_last_login | Last_failed_login | Account_locked_until<br>" + 180*'-' + "<br>" + "<br>".join([f"{u.id} | {u.username} | {u.hashed_password} | {u.salt} | {u.failed_login_attempts} | {u.last_failed_login} | {u.account_locked_until}" for u in users])
+
 
 @app.route('/login', methods=['GET','POST'])
 def login():
@@ -183,9 +187,15 @@ def login():
         # 3. Vyhľadaj používateľa
         user = User.query.filter_by(username=username).first()
 
+        # 3,5. Vytvorenie salted hashu hesla
+        hashed_password = ''
+        if user:
+            salted_password = (password + user.salt).encode('utf-8')
+            hashed_password = hashlib.sha256(salted_password).hexdigest()
+
         # 4. Overenie hesla
         login_successful = False
-        if user and check_password_hash(user.password, password):
+        if user and (hashed_password == user.hashed_password):
             login_successful = True
 
         if login_successful:
@@ -297,9 +307,13 @@ def register():
             flash('This password was found in data breaches. Please choose another.', 'error')
             return render_template('register.html', form=form)
 
+        # Vygenerovanie saltu a nasledny hash salted hesla
+        salt = os.urandom(16)
+        salted_password = (password + salt.hex()).encode('utf-8')
+        hashed_password = hashlib.sha256(salted_password).hexdigest()
+
         # Vytvor účet
-        hashed_pw = generate_password_hash(password)
-        new_user = User(username=username, password=hashed_pw)
+        new_user = User(username=username, hashed_password=hashed_password, salt=salt.hex())
         db.session.add(new_user)
         db.session.commit()
 
